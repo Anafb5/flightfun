@@ -94,19 +94,32 @@ function drawMap(zoomSelected=false){
  else{map.fitBounds(bounds.pad(.12),{maxZoom:3,animate:false});}
 }
 function formatNumber(n){return Number.isFinite(Number(n))&&n!=null?Number(n):null}
-function draw(){const f=FLIGHTS[chosen],data=records[f.id],now=Date.now();drawTimes(f);updateCards();const pct=flightPercent(f);$('pct').textContent=Math.round(pct*100)+' %';$('fill').style.width=(pct*100)+'%';let pos=null,mode='none',sample=0;
- if(data?.row){const row=data.row,lat=formatNumber(row.lat),lng=formatNumber(row.lng);sample=Number(row.updated)*1000;if(!Number.isFinite(sample)||sample<1e12)sample=data.fetchedAt;const matchesDay=Math.abs(sample-Date.parse(f.start))<36*3600000;
- if(matchesDay&&lat!=null&&lng!=null&&Math.abs(lat)<=90&&Math.abs(lng)<=180){pos=[lat,lng];mode=now-sample<=15*60000&&now>=sample?'real':'stale';}}
- if(!pos){const w=flightWindow(f);if(now>=w.departure&&now<=w.arrival){pos=gc(f.src,f.dst,pct);mode='estimated'}}
+function signalTime(row){
+ // AirLabs "updated" es la hora de la última señal ADS-B (UNIX, segundos).
+ const n=Number(row?.updated);
+ return Number.isFinite(n)&&n>1e9?(n>1e12?n:n*1000):null;
+}
+function draw(){const f=FLIGHTS[chosen],data=records[f.id],now=Date.now();drawTimes(f);updateCards();const pct=flightPercent(f);$('pct').textContent=Math.round(pct*100)+' %';$('fill').style.width=(pct*100)+'%';let pos=null,mode='none',sample=null,staleAge=null;
+ const current=data?.row||{};const lat=formatNumber(current.lat),lng=formatNumber(current.lng);
+ sample=signalTime(current);
+ const matchesDay=sample!=null&&Math.abs(sample-Date.parse(f.start))<36*3600000;
+ const coordsValid=matchesDay&&lat!=null&&lng!=null&&Math.abs(lat)<=90&&Math.abs(lng)<=180;
+ const signalRecent=coordsValid&&sample<=now+60000&&now-sample<=15*60000;
+ if(coordsValid)staleAge=Math.max(0,now-sample);
+ if(signalRecent){pos=[lat,lng];mode='real'}
+ if(!pos){const w=flightWindow(f);if(now>=w.departure&&now<=w.arrival){
+    pos=gc(f.src,f.dst,pct);mode='estimated';
+ }else if(coordsValid){pos=[lat,lng];mode='stale'}}
  if(marker){map.removeLayer(marker);marker=null}
- if(pos){marker=L.marker(pos,{icon:markerIcon(mode),zIndexOffset:1000}).addTo(map);marker.bindPopup(f.id+' · '+(mode==='real'?'Posición AirLabs reciente':mode==='stale'?'Última posición AirLabs':'Posición estimada por horario'))}
+ if(pos){marker=L.marker(pos,{icon:markerIcon(mode),zIndexOffset:1000}).addTo(map);marker.bindPopup(f.id+' · '+(mode==='real'?'Posición AirLabs reciente':mode==='stale'?'Última posición AirLabs':'Posición calculada por horario, no GPS'))}
  $('heading').textContent=f.id+' · '+f.route;$('kind').textContent=mode==='real'?'● Posición real':mode==='stale'?'● Última posición conocida':mode==='estimated'?'● Posición estimada':'● Sin posición';
- $('coord').textContent=pos?pos.map(x=>x.toFixed(3)).join(', '):'—';const row=(mode==='real'||mode==='stale')?data.row:null;
+ $('coord').textContent=pos?pos.map(x=>x.toFixed(3)).join(', '):'—';const row=mode==='real'?current:null;
  $('alt').textContent=row&&formatNumber(row.alt)!=null?Math.round(Number(row.alt)*3.28084).toLocaleString('es-ES')+' ft':'—';
  $('speed').textContent=row&&formatNumber(row.speed)!=null?Math.round(Number(row.speed)/1.852)+' kt':'—';
- const detail=mode==='real'?'Coordenadas reales de AirLabs.':mode==='stale'?'Últimas coordenadas de AirLabs; pueden estar desactualizadas.':mode==='estimated'?'Estimación interpolada entre aeropuertos, sin confirmación del despegue.':'Se mostrará una posición al comenzar el horario o cuando AirLabs envíe coordenadas.';
+ const ageText=staleAge!=null?'Última señal AirLabs: hace '+duration(staleAge)+'. ':'';
+ const detail=mode==='real'?'Posición real reciente de AirLabs.':mode==='stale'?ageText+'No hay una señal más nueva disponible.':mode==='estimated'?ageText+'Posición aproximada por horario; no es una coordenada real.':'No se dispone de una posición actual.';
  const remaining=flightWindow(f);const timer=now<remaining.departure?'Sale en '+duration(remaining.departure-now):now<remaining.arrival?'Llegada en aprox. '+duration(remaining.arrival-now):'Llegada prevista superada';$('status').textContent=timer+' · '+detail+(lastStatus?' '+lastStatus:'');
- $('footer').textContent='Salida de referencia: '+fmt(f.start)+' · Llegada de referencia: '+fmt(f.end)+(sample&&pos&&mode!=='estimated'?' · Último dato: '+fmt(sample):'')+'. Datos sujetos a disponibilidad de AirLabs.';
+ $('footer').textContent='Salida programada: '+fmt(f.start)+' · Llegada programada: '+fmt(f.end)+(sample!=null&&coordsValid?' · Última señal real: '+fmt(sample):'')+'. Fuente: AirLabs; sin señal reciente, posición calculada por horario.';
 }
 function setFlight(i, zoom=true){chosen=i;lastStatus='';$('tabs').querySelectorAll('button').forEach((b,j)=>{b.classList.toggle('selected',i===j);b.setAttribute('aria-pressed',String(i===j))});drawMap(zoom);draw()}
 FLIGHTS.forEach((f,i)=>{const b=document.createElement('button');b.className='tab';b.type='button';b.setAttribute('aria-label','Seleccionar vuelo '+f.id+' y acercar el mapa');b.style.setProperty('--route',COLORS[i]);b.innerHTML='<strong>'+f.id+'</strong><span>'+f.route+'</span><small>'+f.day+'</small><div class="flight-hours">'+localTime(f.start,f.srcTZ)+' '+f.from+' → '+localTime(f.end,f.dstTZ)+' '+f.to+'</div><div class="countdown" id="countdown-'+i+'">Calculando…</div><div class="flight-phase" id="phase-'+i+'">—</div><div class="miniprogress"><i id="mini-'+i+'"></i></div>';b.onclick=()=>setFlight(i,true);$('tabs').appendChild(b)});
@@ -159,7 +172,12 @@ async function maybeFetch(){if(pending)return;const now=Date.now();const active=
    const candidate=useSchedules?matching[0]:(matching.find(r=>r.lat!=null&&r.lng!=null)||matching[0]);
    const old=records[active.id]?.row||{};
    const merged={...old,...candidate,__schedules:useSchedules||Boolean(old.__schedules)};
-   // Un dato de horarios nunca debe borrar coordenadas reales anteriores.
+   // Los horarios no tienen coordenadas; una respuesta sin posición no debe borrar la señal previa.
+   const oldSignal=signalTime(old),newSignal=signalTime(candidate);
+   const hasCoords=candidate.lat!=null&&candidate.lng!=null&&Number.isFinite(Number(candidate.lat))&&Number.isFinite(Number(candidate.lng));
+   if(useSchedules||!hasCoords||(oldSignal!=null&&(newSignal==null||newSignal<oldSignal))){
+    for(const key of ['lat','lng','alt','speed','updated']){if(old[key]!=null)merged[key]=old[key];else delete merged[key]}
+   }
    records[active.id]={row:merged,fetchedAt:Date.now()};
    localStorage.setItem(CACHE,JSON.stringify(records));
    const hasEstimate=Boolean(eventTime(merged,'dep_estimated',active.srcTZ)||eventTime(merged,'arr_estimated',active.dstTZ));
