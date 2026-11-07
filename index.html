@@ -30,6 +30,27 @@ function apiTime(value){
 }
 function localTime(ts,tz){const d=new Date(ts);if(!Number.isFinite(d.getTime()))return '—';return new Intl.DateTimeFormat('es-ES',{hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZone:tz}).format(d)}
 function localDate(ts,tz){const d=new Date(ts);if(!Number.isFinite(d.getTime()))return '—';return new Intl.DateTimeFormat('es-ES',{weekday:'short',day:'numeric',month:'short',timeZone:tz}).format(d)}
+// Schedules devuelve horas locales de aeropuerto: preferir siempre *_ts o *_utc.
+function airportLocalTime(value,tz){
+ if(!value)return null;
+ const m=String(value).match(/^(\d{4})-(\d\d)-(\d\d)[ T](\d\d):(\d\d)(?::(\d\d))?/);
+ if(!m)return null;
+ const target=Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0));
+ const fmt=new Intl.DateTimeFormat('en-GB',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+ let guess=target;
+ for(let i=0;i<3;i++){
+  const p=Object.fromEntries(fmt.formatToParts(new Date(guess)).filter(x=>x.type!=='literal').map(x=>[x.type,+x.value]));
+  const local=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);
+  guess+=target-local;
+ }
+ return guess;
+}
+function eventTime(row,name,tz){
+ const ts=row[name+'_ts'];if(ts!=null&&ts!==''){const n=apiTime(Number(ts));if(n!=null)return n;}
+ if(row[name+'_utc'])return apiTime(row[name+'_utc']);
+ if(row.__schedules&&row[name])return airportLocalTime(row[name],tz);
+ return apiTime(row[name]);
+}
 function deltaLabel(ts,scheduled){
  if(ts==null)return {text:'Sin actualización de AirLabs',kind:''};
  const min=Math.round((ts-Date.parse(scheduled))/60000);
@@ -37,7 +58,7 @@ function deltaLabel(ts,scheduled){
  return {text:(min>0?'+':'−')+Math.abs(min)+' min '+(min>0?'de retraso':'de adelanto'),kind:min>0?'late':'early'};
 }
 function drawTimes(f){
- const row=records[f.id]?.row||{},depReal=apiTime(row.dep_actual),depEst=apiTime(row.dep_estimated),arrReal=apiTime(row.arr_actual),arrEst=apiTime(row.arr_estimated);
+ const row=records[f.id]?.row||{},depReal=eventTime(row,'dep_actual',f.srcTZ),depEst=eventTime(row,'dep_estimated',f.srcTZ),arrReal=eventTime(row,'arr_actual',f.dstTZ),arrEst=eventTime(row,'arr_estimated',f.dstTZ);
  const depLive=depReal??depEst,arrLive=arrReal??arrEst;
  $('depAirport').textContent=f.from;$('arrAirport').textContent=f.to;
  $('depScheduled').textContent=localTime(f.start,f.srcTZ);$('depDay').textContent=localDate(f.start,f.srcTZ);
@@ -53,7 +74,7 @@ function drawTimes(f){
  $('arrDelay').textContent=ad.text;$('arrDelay').className='delay '+ad.kind;
 }
 function budget(){try{return JSON.parse(localStorage.getItem(GLOBAL))||{last:0,history:[]}}catch{return {last:0,history:[]}}}
-function flightWindow(f){const r=records[f.id]?.row||{};const departure=apiTime(r.dep_actual)??apiTime(r.dep_estimated)??Date.parse(f.start);const arrival=apiTime(r.arr_estimated)??apiTime(r.arr_actual)??Date.parse(f.end);return {departure,arrival:arrival>departure?arrival:Date.parse(f.end)};}
+function flightWindow(f){const r=records[f.id]?.row||{};const departure=eventTime(r,'dep_actual',f.srcTZ)??eventTime(r,'dep_estimated',f.srcTZ)??Date.parse(f.start);const arrival=eventTime(r,'arr_actual',f.dstTZ)??eventTime(r,'arr_estimated',f.dstTZ)??Date.parse(f.end);return {departure,arrival:arrival>departure?arrival:Date.parse(f.end)};}
 function flightPercent(f){const w=flightWindow(f);return clamp((Date.now()-w.departure)/Math.max(1,w.arrival-w.departure),0,1)}
 function flightPhase(f){const now=Date.now(),w=flightWindow(f),s=w.departure,e=w.arrival;return now<s?'Antes de la salida':now>e?'Horario de llegada superado':'En ventana de vuelo (según horario)'}
 function markerIcon(mode){return L.divIcon({className:'',html:'<div class="mark '+(mode==='real'?'':mode==='stale'?'stale':'estimated')+'">B</div>',iconSize:[30,30],iconAnchor:[15,15]})}
@@ -90,7 +111,7 @@ function duration(ms){const mins=Math.max(0,Math.ceil(ms/60000)),d=Math.floor(mi
 function updateCards(){
  const now=Date.now();FLIGHTS.forEach((f,i)=>{const w=flightWindow(f),r=records[f.id]?.row||{},st=String(r.status||'').toLowerCase();let headline='',phase='';
  if(['landed','arrived'].includes(st)){headline='Aterrizado';phase='Confirmado por AirLabs'}
- else if(now<w.departure){headline='Sale en '+duration(w.departure-now);phase='Salida programada '+localTime(f.start,f.srcTZ)+' · '+f.from+(apiTime(r.dep_estimated)?' · estimada '+localTime(apiTime(r.dep_estimated),f.srcTZ):'')}
+ else if(now<w.departure){headline='Sale en '+duration(w.departure-now);phase='Salida programada '+localTime(f.start,f.srcTZ)+' · '+f.from+(eventTime(r,'dep_estimated',f.srcTZ)?' · estimada '+localTime(eventTime(r,'dep_estimated',f.srcTZ),f.srcTZ):'')}
  else if(now<w.arrival){headline='Quedan aprox. '+duration(w.arrival-now);phase=st==='en-route'?'En vuelo · AirLabs':'En ventana de vuelo · estimado'}
  else {headline='Llegada prevista superada';phase='Sin confirmación de aterrizaje'}
  $('countdown-'+i).textContent=headline;$('phase-'+i).textContent=phase;$('mini-'+i).style.width=(flightPercent(f)*100)+'%';
@@ -99,14 +120,48 @@ function updateCards(){
 $('overview').onclick=()=>drawMap(false);
 function valid(row,f){return String(row.flight_iata||'').toUpperCase()===f.id && (!row.dep_iata||String(row.dep_iata).toUpperCase()===f.from)&&(!row.arr_iata||String(row.arr_iata).toUpperCase()===f.to)}
 let pending=false;
-async function maybeFetch(){if(pending)return;const now=Date.now();const active=FLIGHTS.find(f=>now>=Date.parse(f.start)-3*3600000&&now<=Date.parse(f.end)+90*60000);if(!active){lastStatus='Fuera del periodo de consulta: no se consumen créditos.';draw();return}
+async function maybeFetch(){if(pending)return;const now=Date.now();const active=FLIGHTS.find(f=>now>=Date.parse(f.start)-3*3600000&&now<=Date.parse(f.end)+90*60000);
+ const prior=active?(records[active.id]?.row||{}):{};
+ const departure=active?(eventTime(prior,'dep_actual',active.srcTZ)??eventTime(prior,'dep_estimated',active.srcTZ)??Date.parse(active.start)):0;
+ const airborne=['en-route','active'].includes(String(prior.status||'').toLowerCase());
+ const useSchedules=Boolean(active)&&!airborne&&!eventTime(prior,'dep_actual',active.srcTZ)&&now<Math.max(departure,Date.parse(active.start))+30*60000;if(!active){lastStatus='Fuera del periodo de consulta: no se consumen créditos.';draw();return}
  const b=budget();const times=(b.history||[]).filter(t=>t>now-48*3600000);if(times.length>=MAX_CALLS){lastStatus='Límite de seguridad alcanzado.';draw();return}if(now-b.last<LIMIT){lastStatus='Próxima consulta disponible en '+Math.ceil((LIMIT-(now-b.last))/60000)+' min.';draw();return}
  let existing;try{existing=JSON.parse(localStorage.getItem(LOCK)||'null')}catch{}if(existing?.until>now){lastStatus='Otra pestaña está actualizando.';draw();return}
  const token=Math.random().toString(36).slice(2);localStorage.setItem(LOCK,JSON.stringify({id:token,until:now+25000}));try{if(JSON.parse(localStorage.getItem(LOCK)).id!==token)return}catch{return}
- b.last=now;b.history=[...times,now];localStorage.setItem(GLOBAL,JSON.stringify(b));pending=true;$('refresh').disabled=true;lastStatus='Consultando '+active.id+'…';draw();
- try{const p=new URLSearchParams({api_key:AIRLABS_KEY,flight_iata:active.id,_fields:'flight_iata,dep_iata,arr_iata,lat,lng,alt,speed,updated,status,dep_actual,dep_estimated,arr_actual,arr_estimated'});
- const response=await fetch('https://airlabs.co/api/v9/flights?'+p,{cache:'no-store',signal:AbortSignal.timeout(12000)});if(!response.ok)throw Error('HTTP '+response.status);const json=await response.json();if(json.error)throw Error(json.error.message||json.error.code||'Error de API');const rows=Array.isArray(json.response)?json.response:json.response?[json.response]:[];const found=rows.filter(r=>valid(r,active)).sort((a,b)=>Number(b.updated||0)-Number(a.updated||0));
- if(found.length){const candidate=found.find(r=>r.lat!=null&&r.lng!=null)||found[0];records[active.id]={row:candidate,fetchedAt:Date.now()};localStorage.setItem(CACHE,JSON.stringify(records));lastStatus=candidate.lat!=null?'Datos de '+active.id+' actualizados.':'Vuelo detectado, pero sin coordenadas.'}else lastStatus='AirLabs no encuentra '+active.id+' en este momento.';
+ b.last=now;b.history=[...times,now];localStorage.setItem(GLOBAL,JSON.stringify(b));pending=true;$('refresh').disabled=true;lastStatus='Consultando '+(useSchedules?'horarios de ':'posición de ')+active.id+'…';draw();
+ try{
+  const params=useSchedules
+   ?new URLSearchParams({api_key:AIRLABS_KEY,dep_iata:active.from,arr_iata:active.to})
+   :new URLSearchParams({api_key:AIRLABS_KEY,flight_iata:active.id,_fields:'flight_iata,dep_iata,arr_iata,lat,lng,alt,speed,updated,status,dep_actual,dep_estimated,arr_actual,arr_estimated'});
+  const endpoint=useSchedules?'schedules':'flights';
+  const response=await fetch('https://airlabs.co/api/v9/'+endpoint+'?'+params,{cache:'no-store',signal:AbortSignal.timeout(12000)});
+  if(!response.ok)throw Error('HTTP '+response.status);
+  const json=await response.json();
+  if(json.error)throw Error(json.error.message||json.error.code||'Error de API');
+  const rows=Array.isArray(json.response)?json.response:json.response?[json.response]:[];
+  const matching=rows.filter(r=>valid(r,active)).filter(r=>{
+   if(!useSchedules)return true;
+   const t=eventTime({...r,__schedules:true},'dep_time',active.srcTZ);
+   return t==null||Math.abs(t-Date.parse(active.start))<18*3600000;
+  });
+  matching.sort((a,b)=>{
+   if(useSchedules){
+    const da=Math.abs((eventTime({...a,__schedules:true},'dep_time',active.srcTZ)??Date.parse(active.start))-Date.parse(active.start));
+    const db=Math.abs((eventTime({...b,__schedules:true},'dep_time',active.srcTZ)??Date.parse(active.start))-Date.parse(active.start));
+    return da-db;
+   }
+   return Number(b.updated||0)-Number(a.updated||0);
+  });
+  if(matching.length){
+   const candidate=useSchedules?matching[0]:(matching.find(r=>r.lat!=null&&r.lng!=null)||matching[0]);
+   const old=records[active.id]?.row||{};
+   const merged={...old,...candidate,__schedules:useSchedules||Boolean(old.__schedules)};
+   // Un dato de horarios nunca debe borrar coordenadas reales anteriores.
+   records[active.id]={row:merged,fetchedAt:Date.now()};
+   localStorage.setItem(CACHE,JSON.stringify(records));
+   const hasEstimate=Boolean(eventTime(merged,'dep_estimated',active.srcTZ)||eventTime(merged,'arr_estimated',active.dstTZ));
+   lastStatus=useSchedules?(hasEstimate?'Horarios actualizados desde AirLabs.':'AirLabs no facilita horas estimadas en esta respuesta.'):(candidate.lat!=null?'Posición de '+active.id+' actualizada.':'Vuelo detectado, sin coordenadas.');
+  }else lastStatus=useSchedules?'AirLabs no devuelve horarios de '+active.id+' en este momento.':'AirLabs no encuentra '+active.id+' en este momento.';
  }catch(e){lastStatus='No se pudo consultar AirLabs: '+String(e.message||e)}finally{pending=false;$('refresh').disabled=false;try{if(JSON.parse(localStorage.getItem(LOCK)).id===token)localStorage.removeItem(LOCK)}catch{}draw()}
 }
 $('refresh').onclick=()=>{lastStatus='';maybeFetch()};window.addEventListener('storage',ev=>{if(ev.key===CACHE){try{records=JSON.parse(localStorage.getItem(CACHE)||'{}')}catch{}draw()}});
