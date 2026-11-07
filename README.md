@@ -1,2 +1,0 @@
-# flightfun
-Testing AI
