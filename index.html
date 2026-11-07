@@ -28,8 +28,19 @@ function apiTime(value){
  const normalized=/([zZ]|[+-]\d\d:?\d\d)$/.test(txt)?txt:txt+'Z';
  const ts=Date.parse(normalized);return Number.isFinite(ts)?ts:null;
 }
-function localTime(ts,tz){return new Intl.DateTimeFormat('es-ES',{hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZone:tz}).format(typeof ts==='string'?new Date(ts):new Date(ts))}
-function localDate(ts,tz){return new Intl.DateTimeFormat('es-ES',{weekday:'short',day:'numeric',month:'short',timeZone:tz}).format(typeof ts==='string'?new Date(ts):new Date(ts))}
+// Convertir y validar antes de llamar a Intl.DateTimeFormat; nunca bloquear la interfaz.
+function safeDate(value){
+ const d=value instanceof Date?value:new Date(value);
+ return Number.isFinite(d.getTime())?d:null;
+}
+function localTime(ts,tz){
+ const d=safeDate(ts);if(!d)return '—';
+ try{return new Intl.DateTimeFormat('es-ES',{hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZone:tz}).format(d)}catch{return '—'}
+}
+function localDate(ts,tz){
+ const d=safeDate(ts);if(!d)return '—';
+ try{return new Intl.DateTimeFormat('es-ES',{weekday:'short',day:'numeric',month:'short',timeZone:tz}).format(d)}catch{return '—'}
+}
 function deltaLabel(ts,scheduled){
  if(ts==null)return {text:'Sin actualización de AirLabs',kind:''};
  const min=Math.round((ts-Date.parse(scheduled))/60000);
