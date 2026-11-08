@@ -78,6 +78,7 @@ function drawTimes(f){
 }
 function budget(){try{return JSON.parse(localStorage.getItem(GLOBAL))||{last:0,history:[]}}catch{return {last:0,history:[]}}}
 function flightWindow(f){const r=records[f.id]?.row||{};const departure=eventTime(r,'dep_actual',f.srcTZ)??eventTime(r,'dep_estimated',f.srcTZ)??Date.parse(f.start);const arrival=eventTime(r,'arr_actual',f.dstTZ)??eventTime(r,'arr_estimated',f.dstTZ)??Date.parse(f.end);return {departure,arrival:arrival>departure?arrival:Date.parse(f.end)};}
+function flightFinished(f,now=Date.now()){const row=records[f.id]?.row||{};const status=String(row.status||'').toLowerCase();if(['landed','arrived'].includes(status)||eventTime(row,'arr_actual',f.dstTZ)!=null)return true;const end=flightWindow(f).arrival;const signal=signalTime(row);return now>end+45*60000&&!(signal&&now-signal<15*60000&&['en-route','active'].includes(status));}
 function flightPercent(f){const w=flightWindow(f);return clamp((Date.now()-w.departure)/Math.max(1,w.arrival-w.departure),0,1)}
 function flightPhase(f){const now=Date.now(),w=flightWindow(f),s=w.departure,e=w.arrival;return now<s?'Antes de la salida':now>e?'Horario de llegada superado':'En ventana de vuelo (según horario)'}
 function markerIcon(mode){return L.divIcon({className:'',html:'<div class="mark '+(mode==='real'?'':mode==='stale'?'stale':'estimated')+'">B</div>',iconSize:[30,30],iconAnchor:[15,15]})}
@@ -104,21 +105,24 @@ function draw(){const f=FLIGHTS[chosen],data=records[f.id],now=Date.now();drawTi
  sample=signalTime(current);
  const matchesDay=sample!=null&&Math.abs(sample-Date.parse(f.start))<36*3600000;
  const coordsValid=matchesDay&&lat!=null&&lng!=null&&Math.abs(lat)<=90&&Math.abs(lng)<=180;
- const signalRecent=coordsValid&&sample<=now+60000&&now-sample<=15*60000;
+ const finished=flightFinished(f,now);
+ const signalRecent=!finished&&coordsValid&&sample<=now+60000&&now-sample<=15*60000;
  if(coordsValid)staleAge=Math.max(0,now-sample);
  if(signalRecent){pos=[lat,lng];mode='real'}
- if(!pos){const w=flightWindow(f);if(now>=w.departure&&now<=w.arrival){
+ if(!pos&&!finished){const w=flightWindow(f);if(now>=w.departure&&now<=w.arrival){
     pos=gc(f.src,f.dst,pct);mode='estimated';
  }else if(coordsValid){pos=[lat,lng];mode='stale'}}
  if(marker){map.removeLayer(marker);marker=null}
  if(pos){marker=L.marker(pos,{icon:markerIcon(mode),zIndexOffset:1000}).addTo(map);marker.bindPopup(f.id+' · '+(mode==='real'?'Posición AirLabs reciente':mode==='stale'?'Última posición AirLabs':'Posición calculada por horario, no GPS'))}
- $('heading').textContent=f.id+' · '+f.route;$('kind').textContent=mode==='real'?'● Posición real':mode==='stale'?'● Última posición conocida':mode==='estimated'?'● Posición estimada':'● Sin posición';
+ $('heading').textContent=f.id+' · '+f.route;$('kind').textContent=finished?'● Seguimiento finalizado':mode==='real'?'● Posición real':mode==='stale'?'● Última posición conocida':mode==='estimated'?'● Posición estimada':'● Sin posición';
  $('coord').textContent=pos?pos.map(x=>x.toFixed(3)).join(', '):'—';const row=mode==='real'?current:null;
  $('alt').textContent=row&&formatNumber(row.alt)!=null?Math.round(Number(row.alt)*3.28084).toLocaleString('es-ES')+' ft':'—';
  $('speed').textContent=row&&formatNumber(row.speed)!=null?Math.round(Number(row.speed)/1.852)+' kt':'—';
  const ageText=staleAge!=null?'Última señal AirLabs: hace '+duration(staleAge)+'. ':'';
  const detail=mode==='real'?'Posición real reciente de AirLabs.':mode==='stale'?ageText+'No hay una señal más nueva disponible.':mode==='estimated'?ageText+'Posición aproximada por horario; no es una coordenada real.':'No se dispone de una posición actual.';
- const remaining=flightWindow(f);const timer=now<remaining.departure?'Sale en '+duration(remaining.departure-now):now<remaining.arrival?'Llegada en aprox. '+duration(remaining.arrival-now):'Llegada prevista superada';$('status').textContent=timer+' · '+detail+(lastStatus?' '+lastStatus:'');
+ const remaining=flightWindow(f);const confirmed=['landed','arrived'].includes(String(current.status||'').toLowerCase())||eventTime(current,'arr_actual',f.dstTZ)!=null;
+ const timer=finished?(confirmed?'Aterrizaje confirmado por AirLabs.':'Horario de llegada finalizado. Aterrizaje sin confirmar por AirLabs.'):now<remaining.departure?'Sale en '+duration(remaining.departure-now):now<remaining.arrival?'Llegada en aprox. '+duration(remaining.arrival-now):'Hora prevista de llegada superada';
+ $('status').textContent=timer+(finished?(sample!=null&&coordsValid?' · Última señal recibida: '+fmt(sample)+'.':''):' · '+detail)+(lastStatus?' '+lastStatus:'');
  $('footer').textContent='Salida programada: '+fmt(f.start)+' · Llegada programada: '+fmt(f.end)+(sample!=null&&coordsValid?' · Última señal real: '+fmt(sample):'')+'. Fuente: AirLabs; sin señal reciente, posición calculada por horario.';
 }
 function setFlight(i, zoom=true){chosen=i;lastStatus='';$('tabs').querySelectorAll('button').forEach((b,j)=>{b.classList.toggle('selected',i===j);b.setAttribute('aria-pressed',String(i===j))});drawMap(zoom);draw()}
@@ -129,7 +133,8 @@ function updateCards(){
  if(['landed','arrived'].includes(st)){headline='Aterrizado';phase='Confirmado por AirLabs'}
  else if(now<w.departure){headline='Sale en '+duration(w.departure-now);phase='Salida programada '+localTime(f.start,f.srcTZ)+' · '+f.from+(eventTime(r,'dep_estimated',f.srcTZ)?' · estimada '+localTime(eventTime(r,'dep_estimated',f.srcTZ),f.srcTZ):'')}
  else if(now<w.arrival){headline='Quedan aprox. '+duration(w.arrival-now);phase=st==='en-route'?'En vuelo · AirLabs':'En ventana de vuelo · estimado'}
- else {headline='Llegada prevista superada';phase='Sin confirmación de aterrizaje'}
+ else if(flightFinished(f,now)){headline='Seguimiento finalizado';phase='Llegada prevista '+localTime(w.arrival,f.dstTZ)+' · aterrizaje sin confirmar'}
+ else {headline='Hora de llegada superada';phase='Sin confirmación de aterrizaje'}
  $('countdown-'+i).textContent=headline;$('phase-'+i).textContent=phase;$('mini-'+i).style.width=(flightPercent(f)*100)+'%';
  });
 }
@@ -186,7 +191,7 @@ async function maybeFetch(){if(pending)return;const now=Date.now();const active=
  }catch(e){lastStatus='No se pudo consultar AirLabs: '+String(e.message||e)}finally{pending=false;$('refresh').disabled=false;try{if(JSON.parse(localStorage.getItem(LOCK)).id===token)localStorage.removeItem(LOCK)}catch{}draw()}
 }
 $('refresh').onclick=()=>{lastStatus='';maybeFetch()};window.addEventListener('storage',ev=>{if(ev.key===CACHE){try{records=JSON.parse(localStorage.getItem(CACHE)||'{}')}catch{}draw()}});
-setFlight(0,false);setTimeout(()=>map.invalidateSize(),150);setInterval(()=>{draw();maybeFetch()},15000);
+setFlight(0,true);setTimeout(()=>map.invalidateSize(),150);setInterval(()=>{draw();maybeFetch()},15000);
 </script>
 <script>
 (function(){
